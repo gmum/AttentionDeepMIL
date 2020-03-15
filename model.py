@@ -1,14 +1,17 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from models.distributions import log_Bernoulli
 
 
 class Attention(nn.Module):
-    def __init__(self):
+    def __init__(self, args):
         super(Attention, self).__init__()
-        self.L = 500
+        self.self_att = args.self_att
+        self.L = 512
         self.D = 128
         self.K = 1
+        self.args = args
 
         self.feature_extractor_part1 = nn.Sequential(
             nn.Conv2d(1, 20, kernel_size=5),
@@ -23,6 +26,9 @@ class Attention(nn.Module):
             nn.Linear(50 * 4 * 4, self.L),
             nn.ReLU(),
         )
+
+        if self.self_att:
+            self.self_att = SelfAttention(self.L, self.args)
 
         self.attention = nn.Sequential(
             nn.Linear(self.L, self.D),
@@ -42,6 +48,9 @@ class Attention(nn.Module):
         H = H.view(-1, 50 * 4 * 4)
         H = self.feature_extractor_part2(H)  # NxL
 
+        if self.self_att:
+            H, self_attention, gamma, gamma_kernel = self.self_att(H)
+
         A = self.attention(H)  # NxK
         A = torch.transpose(A, 1, 0)  # KxN
         A = F.softmax(A, dim=1)  # softmax over N
@@ -57,88 +66,80 @@ class Attention(nn.Module):
     def calculate_classification_error(self, X, Y):
         Y = Y.float()
         _, Y_hat, _ = self.forward(X)
-        error = 1. - Y_hat.eq(Y).cpu().float().mean().data[0]
+        error = 1. - Y_hat.eq(Y).cpu().float().mean().item()
 
         return error, Y_hat
 
     def calculate_objective(self, X, Y):
         Y = Y.float()
         Y_prob, _, A = self.forward(X)
-        Y_prob = torch.clamp(Y_prob, min=1e-5, max=1. - 1e-5)
-        neg_log_likelihood = -1. * (Y * torch.log(Y_prob) + (1. - Y) * torch.log(1. - Y_prob))  # negative log bernoulli
+        log_likelihood = -log_Bernoulli(Y, Y_prob)
 
-        return neg_log_likelihood, A
+        return log_likelihood, A
 
-class GatedAttention(nn.Module):
-    def __init__(self):
-        super(GatedAttention, self).__init__()
-        self.L = 500
-        self.D = 128
-        self.K = 1
 
-        self.feature_extractor_part1 = nn.Sequential(
-            nn.Conv2d(1, 20, kernel_size=5),
-            nn.ReLU(),
-            nn.MaxPool2d(2, stride=2),
-            nn.Conv2d(20, 50, kernel_size=5),
-            nn.ReLU(),
-            nn.MaxPool2d(2, stride=2)
-        )
-
-        self.feature_extractor_part2 = nn.Sequential(
-            nn.Linear(50 * 4 * 4, self.L),
-            nn.ReLU(),
-        )
-
-        self.attention_V = nn.Sequential(
-            nn.Linear(self.L, self.D),
-            nn.Tanh()
-        )
-
-        self.attention_U = nn.Sequential(
-            nn.Linear(self.L, self.D),
-            nn.Sigmoid()
-        )
-
-        self.attention_weights = nn.Linear(self.D, self.K)
-
-        self.classifier = nn.Sequential(
-            nn.Linear(self.L*self.K, 1),
-            nn.Sigmoid()
-        )
+class SelfAttention(nn.Module):
+    def __init__(self, in_dim, args):
+        super(SelfAttention, self).__init__()
+        self.query_conv = nn.Conv1d(in_channels=in_dim, out_channels=in_dim // 8, kernel_size=1)
+        self.key_conv = nn.Conv1d(in_channels=in_dim, out_channels=in_dim // 8, kernel_size=1)
+        self.value_conv = nn.Conv1d(in_channels=in_dim, out_channels=in_dim, kernel_size=1)
+        self.gamma = nn.Parameter((torch.ones(1)).cuda())
+        self.softmax = nn.Softmax(dim=-1)
+        self.gamma_att = nn.Parameter((torch.ones(1)).cuda())
+        self.args = args
 
     def forward(self, x):
-        x = x.squeeze(0)
+        x = x.view(1, x.shape[0], x.shape[1]).permute((0, 2, 1))
+        bs, C, length = x.shape
+        proj_query = self.query_conv(x).view(bs, -1, length).permute(0, 2, 1)  # B X CX(N)
+        proj_key = self.key_conv(x).view(bs, -1, length)  # B X C x (*W*H)
 
-        H = self.feature_extractor_part1(x)
-        H = H.view(-1, 50 * 4 * 4)
-        H = self.feature_extractor_part2(H)  # NxL
+        if self.args.att_gauss_spatial:
+            proj = torch.zeros((length, length))
+            if self.args.cuda:
+                proj = proj.cuda()
+            proj_query = proj_query.permute(0, 2, 1)
+            for i in range(length):
+                gauss = torch.pow(proj_query - proj_key[:, :, i].t(), 2).sum(dim=1)
+                proj[:, i] = torch.exp(-F.relu(self.gamma_att) * gauss)
+            energy = proj.view((1, length, length))
+        elif self.args.att_inv_q_spatial:
+            proj = torch.zeros((length, length))
+            if self.args.cuda:
+                proj = proj.cuda()
+            proj_query = proj_query.permute(0, 2, 1)
+            for i in range(length):
+                gauss = torch.pow(proj_query - proj_key[:, :, i].t(), 2).sum(dim=1)
+                proj[:, i] = 1 / (F.relu(self.gamma_att) * gauss + torch.ones(1).cuda())
+            energy = proj.view((1, length, length))
+        elif self.args.att_module:
+            proj = torch.zeros((length, length))
+            if self.args.cuda:
+                proj = proj.cuda()
+            proj_query = proj_query.permute(0, 2, 1)
+            for i in range(length):
+                proj[:, i] = (torch.abs(proj_query - proj_key[:, :, i].t()) -
+                         torch.abs(proj_query) -
+                         torch.abs(proj_key[:, :, i].t())).sum(dim=1)
+            energy = proj.view((1, length, length))
+        elif self.args.laplace_att:
+            proj = torch.zeros((length, length))
+            if self.args.cuda:
+                proj = proj.cuda()
+            proj_query = proj_query.permute(0, 2, 1)
+            for i in range(length):
+                proj[:, i] = (-torch.abs(proj_query - proj_key[:, :, i].t())).sum(dim=1)
+            energy = proj.view((1, length, length))
+        else:
+            energy = torch.bmm(proj_query, proj_key)  # transpose check
 
-        A_V = self.attention_V(H)  # NxD
-        A_U = self.attention_U(H)  # NxD
-        A = self.attention_weights(A_V * A_U) # element wise multiplication # NxK
-        A = torch.transpose(A, 1, 0)  # KxN
-        A = F.softmax(A, dim=1)  # softmax over N
+        attention = self.softmax(energy)  # BX (N) X (N)
 
-        M = torch.mm(A, H)  # KxL
+        proj_value = self.value_conv(x).view(bs, -1, length)  # B X C X N
 
-        Y_prob = self.classifier(M)
-        Y_hat = torch.ge(Y_prob, 0.5).float()
+        out = torch.bmm(proj_value, attention.permute(0, 2, 1))
+        out = out.view(bs, C, length)
 
-        return Y_prob, A
-
-    # AUXILIARY METHODS
-    def calculate_classification_error(self, X, Y):
-        Y = Y.float()
-        _, Y_hat, _ = self.forward(X)
-        error = 1. - Y_hat.eq(Y).cpu().float().mean().item()
-    
-        return error, Y_hat
-    
-    def calculate_objective(self, X, Y):
-        Y = Y.float()
-        Y_prob, _, A = self.forward(X)
-        Y_prob = torch.clamp(Y_prob, min=1e-5, max=1. - 1e-5)
-        neg_log_likelihood = -1. * (Y * torch.log(Y_prob) + (1. - Y) * torch.log(1. - Y_prob))  # negative log bernoulli
-    
-        return neg_log_likelihood, A
+        out = self.gamma * out + x
+        return out[0].permute(1, 0), attention, self.gamma, self.gamma_att

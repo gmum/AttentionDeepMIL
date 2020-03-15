@@ -7,8 +7,9 @@ from torchvision import datasets, transforms
 
 
 class MnistBags(data_utils.Dataset):
-    def __init__(self, target_number=9, mean_bag_length=10, var_bag_length=2, num_bag=250, seed=1, train=True):
-        self.target_number = target_number
+    def __init__(self, xor_numbers=[9, 1], mean_bag_length=10, var_bag_length=2, num_bag=250, seed=1, train=True,
+                 mode=0):
+        self.xor_numbers = torch.from_numpy(np.asarray(xor_numbers))
         self.mean_bag_length = mean_bag_length
         self.var_bag_length = var_bag_length
         self.num_bag = num_bag
@@ -20,11 +21,11 @@ class MnistBags(data_utils.Dataset):
         self.num_in_test = 10000
 
         if self.train:
-            self.train_bags_list, self.train_labels_list = self._create_bags()
+            self.train_bags_list, self.train_labels_list = self._create_bags(mode)
         else:
-            self.test_bags_list, self.test_labels_list = self._create_bags()
+            self.test_bags_list, self.test_labels_list = self._create_bags(mode)
 
-    def _create_bags(self):
+    def _create_bags(self, mode):
         if self.train:
             loader = data_utils.DataLoader(datasets.MNIST('../datasets',
                                                           train=True,
@@ -62,7 +63,16 @@ class MnistBags(data_utils.Dataset):
                 indices = torch.LongTensor(self.r.randint(0, self.num_in_test, bag_length))
 
             labels_in_bag = all_labels[indices]
-            labels_in_bag = labels_in_bag == self.target_number
+
+            if mode == 0:
+                labels_in_bag = torch.sum(self.xor_numbers[0] == labels_in_bag) > 0
+            elif mode == 1:
+                labels_in_bag = torch.sum(self.xor_numbers[0] == labels_in_bag) > 1
+            elif mode == 2:
+                labels_in_bag = ((torch.sum(self.xor_numbers[0] == labels_in_bag) > 0) +
+                                 (torch.sum(self.xor_numbers[1] == labels_in_bag) > 0)) > 1
+            else:
+                raise ValueError('Wrong mode!')
 
             bags_list.append(all_imgs[indices])
             labels_list.append(labels_in_bag)
@@ -78,50 +88,9 @@ class MnistBags(data_utils.Dataset):
     def __getitem__(self, index):
         if self.train:
             bag = self.train_bags_list[index]
-            label = [max(self.train_labels_list[index]), self.train_labels_list[index]]
+            label = self.train_labels_list[index]
         else:
             bag = self.test_bags_list[index]
-            label = [max(self.test_labels_list[index]), self.test_labels_list[index]]
+            label = self.test_labels_list[index]
 
         return bag, label
-
-
-if __name__ == "__main__":
-
-    train_loader = data_utils.DataLoader(MnistBags(target_number=9,
-                                                   mean_bag_length=10,
-                                                   var_bag_length=2,
-                                                   num_bag=100,
-                                                   seed=1,
-                                                   train=True),
-                                         batch_size=1,
-                                         shuffle=True)
-
-    test_loader = data_utils.DataLoader(MnistBags(target_number=9,
-                                                  mean_bag_length=10,
-                                                  var_bag_length=2,
-                                                  num_bag=100,
-                                                  seed=1,
-                                                  train=False),
-                                        batch_size=1,
-                                        shuffle=False)
-
-    len_bag_list_train = []
-    mnist_bags_train = 0
-    for batch_idx, (bag, label) in enumerate(train_loader):
-        len_bag_list_train.append(int(bag.squeeze(0).size()[0]))
-        mnist_bags_train += label[0].numpy()[0]
-    print('Number positive train bags: {}/{}\n'
-          'Number of instances per bag, mean: {}, max: {}, min {}\n'.format(
-        mnist_bags_train, len(train_loader),
-        np.mean(len_bag_list_train), np.min(len_bag_list_train), np.max(len_bag_list_train)))
-
-    len_bag_list_test = []
-    mnist_bags_test = 0
-    for batch_idx, (bag, label) in enumerate(test_loader):
-        len_bag_list_test.append(int(bag.squeeze(0).size()[0]))
-        mnist_bags_test += label[0].numpy()[0]
-    print('Number positive test bags: {}/{}\n'
-          'Number of instances per bag, mean: {}, max: {}, min {}\n'.format(
-        mnist_bags_test, len(test_loader),
-        np.mean(len_bag_list_test), np.min(len_bag_list_test), np.max(len_bag_list_test)))
