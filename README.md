@@ -1,4 +1,4 @@
-Kernel self-attention in deep multiple instancelearning
+Kernel self-attention in deep multiple instance learning
 ================================================
 
 by Dawid Rymarczyk (<rymarczykdawid@gmail.com>), Jacek Tabor and Bartosz Zieliński
@@ -26,7 +26,6 @@ If run as main, it computes the ratio of positive bags as well as the mean, max 
 
 `main.py`: Trains a small CNN with the Adam optimization algorithm.
 The training takes 20 epoches. Last, the accuracy and loss of the model on the test set is computed.
-In addition, a subset of the bags labels and instance labels are printed.
 
 `model.py`: The model is a modified LeNet-5, see <http://yann.lecun.com/exdb/publis/pdf/lecun-98.pdf>.
 
