@@ -42,7 +42,7 @@ parser.add_argument('--att_inv_q_spatial', action='store_true', default=False,
                     help='training with inverse quadratic kernel')
 parser.add_argument('--att_module', action='store_true', default=False, help='training with module kernel')
 parser.add_argument('--laplace_att', action='store_true', default=False, help='laplace kernel')
-parser.add_argument('--mode', type=int, default=0, help='Mode for MIL assumption: '
+parser.add_argument('--mode', type=int, default=2, help='Mode for MIL assumption: '
                                                         '0 - Standard, 1 - Threshold-based, 2 - Presence-based')
 
 args = parser.parse_args()

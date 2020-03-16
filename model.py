@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from models.distributions import log_Bernoulli
+from distributions import log_Bernoulli
 
 
 class Attention(nn.Module):
